@@ -1,0 +1,146 @@
+name: Build Release from Core Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      core-tag:
+        description: "Core tag to build against (e.g. v1.19.24-sshki.1)"
+        required: true
+      core-repo:
+        description: "Core repo (owner/name). Default: iszhangyt/mihomo"
+        required: false
+        default: "iszhangyt/mihomo"
+      release-tag:
+        description: "Release tag to publish in this repo (e.g. cmfa-core-v1.19.24-sshki.1)"
+        required: true
+      prerelease:
+        description: "Mark GitHub Release as prerelease (true/false)"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CORE_TAG: ${{ inputs.core-tag }}
+      CORE_REPO: ${{ inputs.core-repo }}
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      PRERELEASE: ${{ inputs.prerelease }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          test -n "${CORE_TAG}"
+          test -n "${CORE_REPO}"
+          test -n "${RELEASE_TAG}"
+          echo "CORE_REPO=${CORE_REPO}"
+          echo "CORE_TAG=${CORE_TAG}"
+          echo "RELEASE_TAG=${RELEASE_TAG}"
+          echo "PRERELEASE=${PRERELEASE}"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Checkout submodules
+        run: git submodule update --init --recursive --force
+
+      - name: Pin core submodule to given tag
+        run: |
+          set -euo pipefail
+          CORE_PATH="core/src/foss/golang/clash"
+          cd "${CORE_PATH}"
+
+          git remote set-url origin "https://github.com/${CORE_REPO}.git"
+          git fetch --tags origin
+          git checkout "${CORE_TAG}"
+
+          echo "Pinned core to:"
+          git rev-parse HEAD
+          cd "${GITHUB_WORKSPACE}"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
+          go-version: "1.26"
+
+      - name: Apply Patches
+        run: |
+          cd $(go env GOROOT)
+          for p in $GITHUB_WORKSPACE/.github/patch/*.patch; do patch --verbose -p 1 < "$p"; done
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Update CA
+        run: |
+          sudo apt-get update && sudo apt-get install ca-certificates
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt core/src/foss/golang/clash/component/ca/ca-certificates.crt
+
+      - name: Signing properties (optional)
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SIGNING_STORE_PASSWORD:-}" ] && [ -n "${SIGNING_KEY_ALIAS:-}" ] && [ -n "${SIGNING_KEY_PASSWORD:-}" ]; then
+            touch signing.properties
+            echo keystore.password="$SIGNING_STORE_PASSWORD" > signing.properties
+            echo key.alias="$SIGNING_KEY_ALIAS" >> signing.properties
+            echo key.password="$SIGNING_KEY_PASSWORD" >> signing.properties
+          else
+            echo "Signing secrets not set; building unsigned AlphaRelease."
+          fi
+
+      - name: Build (MetaRelease if signed, otherwise AlphaRelease)
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SIGNING_STORE_PASSWORD:-}" ] && [ -n "${SIGNING_KEY_ALIAS:-}" ] && [ -n "${SIGNING_KEY_PASSWORD:-}" ]; then
+            ./gradlew --no-daemon app:assembleMetaRelease
+          else
+            ./gradlew --no-daemon app:assembleAlphaRelease
+          fi
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: "APK-${{ env.RELEASE_TAG }}"
+          path: |
+            app/build/outputs/apk/**/release/*.apk
+
+      - name: Create/Update GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          prerelease: ${{ env.PRERELEASE }}
+          generate_release_notes: true
+          files: |
+            app/build/outputs/apk/**/release/*.apk
+
