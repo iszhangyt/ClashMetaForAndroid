@@ -10,13 +10,17 @@ on:
         description: "Core repo (owner/name). Default: iszhangyt/mihomo"
         required: false
         default: "iszhangyt/mihomo"
+      custom-application-id:
+        description: "Optional custom applicationId (e.g. com.github.iszhangyt.clash)"
+        required: false
+        default: "com.github.iszhangyt.clash"
       release-tag:
         description: "Release tag to publish in this repo (e.g. cmfa-core-v1.19.24-sshki.1)"
         required: true
       prerelease:
         description: "Mark GitHub Release as prerelease (true/false)"
         required: false
-        default: "true"
+        default: "false"
 
 permissions:
   contents: write
@@ -27,6 +31,7 @@ jobs:
     env:
       CORE_TAG: ${{ inputs.core-tag }}
       CORE_REPO: ${{ inputs.core-repo }}
+      CUSTOM_APPLICATION_ID: ${{ inputs.custom-application-id }}
       RELEASE_TAG: ${{ inputs.release-tag }}
       PRERELEASE: ${{ inputs.prerelease }}
     steps:
@@ -38,6 +43,7 @@ jobs:
           test -n "${RELEASE_TAG}"
           echo "CORE_REPO=${CORE_REPO}"
           echo "CORE_TAG=${CORE_TAG}"
+          echo "CUSTOM_APPLICATION_ID=${CUSTOM_APPLICATION_ID}"
           echo "RELEASE_TAG=${RELEASE_TAG}"
           echo "PRERELEASE=${PRERELEASE}"
 
@@ -98,6 +104,16 @@ jobs:
           sudo update-ca-certificates
           cp -f /etc/ssl/certs/ca-certificates.crt core/src/foss/golang/clash/component/ca/ca-certificates.crt
 
+      - name: Configure applicationId
+        run: |
+          set -euo pipefail
+          if [ -n "${CUSTOM_APPLICATION_ID:-}" ]; then
+            printf 'custom.application.id=%s\n' "${CUSTOM_APPLICATION_ID}" > local.properties
+            echo "Configured custom.application.id=${CUSTOM_APPLICATION_ID}"
+          else
+            echo "Using default applicationId from build.gradle.kts"
+          fi
+
       - name: Signing properties (optional)
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
@@ -110,6 +126,9 @@ jobs:
             echo keystore.password="$SIGNING_STORE_PASSWORD" > signing.properties
             echo key.alias="$SIGNING_KEY_ALIAS" >> signing.properties
             echo key.password="$SIGNING_KEY_PASSWORD" >> signing.properties
+          elif [ -n "${CUSTOM_APPLICATION_ID:-}" ]; then
+            echo "Custom applicationId requires signing secrets to produce an upgradeable build." >&2
+            exit 1
           else
             echo "Signing secrets not set; building unsigned AlphaRelease."
           fi
@@ -123,6 +142,9 @@ jobs:
           set -euo pipefail
           if [ -n "${SIGNING_STORE_PASSWORD:-}" ] && [ -n "${SIGNING_KEY_ALIAS:-}" ] && [ -n "${SIGNING_KEY_PASSWORD:-}" ]; then
             ./gradlew --no-daemon app:assembleMetaRelease
+          elif [ -n "${CUSTOM_APPLICATION_ID:-}" ]; then
+            echo "Custom applicationId requires signing secrets to produce an upgradeable build." >&2
+            exit 1
           else
             ./gradlew --no-daemon app:assembleAlphaRelease
           fi
