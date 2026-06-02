@@ -62,8 +62,9 @@ jobs:
           cd "${CORE_PATH}"
 
           git remote set-url origin "https://github.com/${CORE_REPO}.git"
-          git fetch --tags origin
-          git checkout "${CORE_TAG}"
+          git fetch --no-tags --prune origin "+refs/heads/*:refs/remotes/origin/*"
+          git fetch --no-tags --force origin "refs/tags/${CORE_TAG}:refs/tags/${CORE_TAG}"
+          git checkout --detach "refs/tags/${CORE_TAG}"
 
           echo "Pinned core to:"
           git rev-parse HEAD
@@ -165,4 +166,3 @@ jobs:
           generate_release_notes: true
           files: |
             app/build/outputs/apk/**/release/*.apk
-
